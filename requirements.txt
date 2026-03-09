@@ -1,1 +1,8 @@
 requests
+Django>=4.2
+djangorestframework>=3.14
+django-filter>=23.0
+django-cors-headers>=4.0
+python-dotenv>=1.0
+pytz>=2023.3
+sqlparse>=0.4.4
