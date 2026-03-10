@@ -3,4 +3,6 @@ djangorestframework>=3.14
 
 beautifulsoup4>=4.12
 cloudscraper>=1.2.71
-requests>=2.31
+requests
+django-cors-headers
+
