@@ -1,11 +1,13 @@
 import cloudscraper
 import random
+
 from bs4 import BeautifulSoup
-from urllib.parse import quote_plus
+from urllib.parse import quote
+
+import re
+from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 
 PROXIES = [
     "http://dcznsktz:khvgikqdia1f@31.59.20.176:6754",
@@ -17,159 +19,76 @@ PROXIES = [
     "http://dcznsktz:khvgikqdia1f@64.137.96.74:6641",
 ]
 
-
-IGNORE_ANCHOR_TITLES = {
-    "Naruto: Shippuden",
-    "Solo Leveling Season 2: Arise from the Shadow",
-    "Demon Slayer: Kimetsu no Yaiba Swordsmith Village Arc"
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",  # Added Accept header for AJAX calls
+    "X-Requested-With": "XMLHttpRequest"  # Added X-Requested-With header for AJAX calls
 }
 
-
-def get_random_proxy():
-    proxy = random.choice(PROXIES)
-    return {"http": proxy, "https": proxy}
-
-
-# create scraper once (faster)
+# GLOBAL SCRAPER
 scraper = cloudscraper.create_scraper(
     browser={
         "browser": "chrome",
         "platform": "windows",
-        "desktop": True
+        "mobile": False,
     }
 )
 
 
-headers = {
-    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "accept-language": "en-US,en;q=0.9",
-    "cache-control": "no-cache",
-    "pragma": "no-cache",
-    "upgrade-insecure-requests": "1",
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36"
-}
+def get_random_proxy():
+    proxy = random.choice(PROXIES)
+    return proxy
 
-
-def fetch_episodes(anime_id, proxy):
-
-    episode_data = []
-
-    try:
-        x = scraper.get(
-            f"https://hianime.to/ajax/v2/episode/list/{anime_id}",
-            headers=headers,
-            proxies=proxy,
-            timeout=15
-        )
-
-        y = x.json()
-        x_text = y['html']
-
-        episode_soup = BeautifulSoup(x_text, "html.parser")
-
-        episodes_list = episode_soup.find_all(
-            "a",
-            attrs={"data-id": True, "data-number": True}
-        )
-
-        for episode in episodes_list:
-            episode_data.append({
-                "episode_id": episode.get("data-id"),
-                "episode_number": episode.get("data-number"),
-            })
-
-    except Exception as e:
-        print("Episode fetch failed:", e)
-
-    return episode_data
-
-
-@api_view(['POST'])
+@api_view(["POST"])
 def anime_search(request):
 
-    query = request.data.get('query')
+    results = []
+    query = request.data.get("query")
+    encoded = quote(query)
+    url = f"https://9animetv.to/search?keyword={encoded}"
+    x = scraper.get(url, headers=headers, proxies={'https': get_random_proxy()})
+    y = x.text
+    soup = BeautifulSoup(y, "lxml")
+    container = soup.find_all("div", class_="flw-item item-qtip")
+    if not container:
+        return Response(status=status.HTTP_404_NOT_FOUND)
+    for item in container:
+        anime_id = item.get("data-id")
+        poster = item.find("img").get("data-src")
+        title = item.find("img").get("alt")
+        results.append({
+            "anime_id": anime_id,
+            "poster": poster,
+            "title": title
+        })
+    return Response({"results_found":len(results),"results":results}, status=status.HTTP_200_OK)
+@api_view(["GET"])
+def episode_detail(request,anime_id):
+    episode_data = []
 
-    if not query:
-        return Response({"error": "keyword required"}, status=400)
-
-    query_for_url = quote_plus(query)
-    url = f"https://hianime.to/search?keyword={query_for_url}"
-
-    for attempt in range(5):
-
-        proxy = get_random_proxy()
-        print("Using Proxy:", proxy)
-
-        try:
-
-            r = scraper.get(
-                url,
-                headers=headers,
-                proxies=proxy,
-                timeout=15
-            )
-
-            print("Status:", r.status_code)
-
-            if r.status_code != 200:
-                continue
-
-            soup = BeautifulSoup(r.text, "html.parser")
-
-            posters = soup.find_all("img", class_="film-poster-img")
-
-            Data = []
-            tasks = []
-
-            with ThreadPoolExecutor(max_workers=10) as executor:
-
-                for poster in posters:
-
-                    image = poster.get("data-src") or poster.get("src")
-                    title = poster.get("alt")
-
-                    desc = soup.find("a", title=title)
-
-                    if not desc:
-
-                        if title in IGNORE_ANCHOR_TITLES:
-                            continue
-
-                        print("Anchor not found for:", title)
-                        continue
-
-                    anime_id = desc.get("data-id")
-
-                    if anime_id:
-                        future = executor.submit(fetch_episodes, anime_id, proxy)
-                        tasks.append((future, image, title))
-                    else:
-                        Data.append({
-                            "image": image,
-                            "title": title,
-                            "episodes_data": []
-                        })
-
-                for future, image, title in tasks:
-
-                    episode_data = future.result()
-
-                    Data.append({
-                        "image": image,
-                        "title": title,
-                        "episodes_data": episode_data
-                    })
-
-            return Response({
-                "proxy_used": proxy["http"],
-                "results": len(Data),
-                "data": Data
-            })
-
-        except Exception as e:
-
-            print("Proxy Failed:", proxy)
-            print("Error:", str(e))
-            continue
-
-    return Response({"error": "All proxies failed"}, status=502)
+    url = f"https://9animetv.to/ajax/episode/list/{anime_id}"
+    x = scraper.get(url, headers=headers, proxies={'https': get_random_proxy()}).json()
+    if not x:
+        return Response(status=status.HTTP_404_NOT_FOUND)
+    y = x["html"]
+    ep_soup = BeautifulSoup(y, "lxml")
+    episode_class = ep_soup.find_all("a",class_="item ep-item")
+    if not episode_class:
+        return Response(status=status.HTTP_404_NOT_FOUND)
+    for episodes in episode_class:
+        episode_id = episodes.get("data-id")
+        episode_number = episodes.get("data-number")
+        episode_data.append({
+            "episode_number": episode_number,
+            "episode_id": episode_id,
+        })
+    return Response({"episode_data":episode_data}, status=status.HTTP_200_OK)
+@api_view(["GET"])
+def get_stream(request,episode_slug):
+    url = "Invalid Slug Request Should be in a valid format"
+    numbers = re.findall(r'\d+', episode_slug)[0]
+    if episode_slug == f"{numbers}-english":
+        url = f"https://megaplay.buzz/stream/s-2/{numbers}/dub"
+    if episode_slug == f"{numbers}-japanese":
+        url = f"https://megaplay.buzz/stream/s-2/{numbers}/sub"
+    return Response(url)
